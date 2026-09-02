@@ -133,8 +133,16 @@ jobs:
         run: |
           set -euxo pipefail
           git clone --depth=1 -b "$CLANG_BRANCH" "$CLANG_REPO" "$HOME/proton-clang"
-          echo "$HOME/proton-clang/bin" >> "$GITHUB_PATH"
+          echo "CLANG_DIR=$HOME/proton-clang" >> "$GITHUB_ENV"
           "$HOME/proton-clang/bin/clang" --version | head -1
+          # Deliberately NOT added to the front of $PATH. Proton-Clang ships a
+          # 2020-era GNU ld, and once it shadows /usr/bin/ld every *host* tool
+          # (fixdep, kconfig) is linked with it against the runner's modern
+          # glibc, which fails with:
+          #   ld: /lib/x86_64-linux-gnu/libc.so.6: unknown type [0x13] section `.relr.dyn`
+          # The toolchain is therefore appended to $PATH in the build steps
+          # (for aarch64-linux-gnu-* / arm-linux-gnueabi-*) while clang and the
+          # llvm binutils are referenced by absolute path.
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -182,10 +190,12 @@ jobs:
         working-directory: kernel
         run: |
           set -uxo pipefail
+          # Append (never prepend) - see the Proton-Clang step for why.
+          export PATH="$PATH:$CLANG_DIR/bin"
           # Surface the failure through ::error:: annotations: the raw job log
           # lives on a blob host that is not always reachable.
           if ! make -j"$(nproc --all)" O=out ARCH=arm64 \
-                 CC="ccache clang" \
+                 CC="ccache $CLANG_DIR/bin/clang" \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -231,15 +241,30 @@ jobs:
       - name: Build kernel
         working-directory: kernel
         run: |
-          set -euxo pipefail
+          set -uxo pipefail
+          export PATH="$PATH:$CLANG_DIR/bin"
           make -j"$(nproc --all)" O=out ARCH=arm64 \
-            CC="ccache clang" \
+            CC="ccache $CLANG_DIR/bin/clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            "$KERNEL_IMAGE" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+            LD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" \
+            NM="$CLANG_DIR/bin/llvm-nm" \
+            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" \
+            OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
+            STRIP="$CLANG_DIR/bin/llvm-strip" \
+            "$KERNEL_IMAGE" > "$GITHUB_WORKSPACE/build.log" 2>&1
+          rc=$?
+          tail -40 "$GITHUB_WORKSPACE/build.log"
+          if [ "$rc" -ne 0 ]; then
+            # Same reason as the defconfig step: mirror the real compiler
+            # errors into annotations, which survive without the blob host.
+            grep -E 'error:|Error [0-9]|undefined (reference|symbol)' \
+              "$GITHUB_WORKSPACE/build.log" | head -25 \
+              | while IFS= read -r line; do echo "::error::build: ${line}"; done
+            exit "$rc"
+          fi
 
       - name: Verify build artifacts
         working-directory: kernel
