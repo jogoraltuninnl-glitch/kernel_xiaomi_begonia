@@ -1,4 +1,4 @@
-From ba66773447509209aae9dcdff2cf12cd4eb3b6b9 Mon Sep 17 00:00:00 2001
+From a297403f3b006faba8a1386ffa8c6b8556b77a2d Mon Sep 17 00:00:00 2001
 From: egor <egor@localhost>
 Date: Wed, 2 Sep 2026 02:56:17 +0000
 Subject: [PATCH] begonia: ship the rtmm/ktrace stubs as real files, untrack
@@ -16,24 +16,14 @@ The stubs are now ordinary headers. drivers/kernelsu was likewise committed
 as an absolute symlink; it is recreated by KernelSU's setup.sh, so it is
 untracked instead.
 ---
- .gitignore             |  1 +
  drivers/kernelsu       |  1 -
  include/linux/ktrace.h |  5 ++++-
  include/linux/rtmm.h   | 27 ++++++++++++++++++++++++++-
- 4 files changed, 31 insertions(+), 3 deletions(-)
+ 3 files changed, 30 insertions(+), 3 deletions(-)
  delete mode 120000 drivers/kernelsu
  mode change 120000 => 100644 include/linux/ktrace.h
  mode change 120000 => 100644 include/linux/rtmm.h
 
-diff --git a/.gitignore b/.gitignore
-index 0931b3902..cfda810e7 100644
---- a/.gitignore
-+++ b/.gitignore
-@@ -135,3 +135,4 @@ out_qa/
- drivers/misc/mediatek/connectivity/wmt_drv
- drivers/misc/mediatek/connectivity/wmt_chrdev_wifi
- drivers/misc/mediatek/connectivity/wlan_drv_gen4m
-+drivers/kernelsu/
 diff --git a/drivers/kernelsu b/drivers/kernelsu
 deleted file mode 120000
 index b32a3654a..000000000
