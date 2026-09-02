@@ -263,6 +263,11 @@ jobs:
             grep -E 'error:|Error [0-9]|undefined (reference|symbol)' \
               "$GITHUB_WORKSPACE/build.log" | head -25 \
               | while IFS= read -r line; do echo "::error::build: ${line}"; done
+            # Unconditional tail as well - not every failure looks like a
+            # compiler diagnostic (disk exhaustion, missing host tool, ...).
+            tail -40 "$GITHUB_WORKSPACE/build.log" \
+              | while IFS= read -r line; do echo "::error::tail: ${line}"; done
+            df -h / | while IFS= read -r line; do echo "::error::disk: ${line}"; done
             exit "$rc"
           fi
 
