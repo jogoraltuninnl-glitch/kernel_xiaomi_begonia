@@ -393,6 +393,12 @@ jobs:
           mkdir -p /tmp/logs
           tail -400 build.log > /tmp/logs/build-tail.txt 2>/dev/null \
             || echo "build.log missing" > /tmp/logs/build-tail.txt
+          # A parallel make buries the real diagnostic hundreds of lines above
+          # the last output, so keep a filtered view and the whole log.
+          grep -nE 'error:|Error [0-9]|warning: .*\[-W.*error|undefined|No rule to make' \
+            build.log > /tmp/logs/build-errors.txt 2>/dev/null \
+            || echo "no matches" > /tmp/logs/build-errors.txt
+          gzip -9 -c build.log > /tmp/logs/build-full.log.gz 2>/dev/null || true
           cp kernel/out/.config /tmp/logs/config.txt 2>/dev/null || true
           { df -h /; echo; free -m; } > /tmp/logs/env.txt 2>&1
           cp /tmp/probe.txt /tmp/logs/probe.txt 2>/dev/null || true
