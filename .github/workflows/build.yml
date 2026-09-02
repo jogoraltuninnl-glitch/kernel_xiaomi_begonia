@@ -287,9 +287,6 @@ jobs:
               -s -p prepare 2>&1 | grep -E "^(KBUILD_CFLAGS|CC|cc-name|stackp-flag|CLANG_FLAGS|CROSS_COMPILE) " | head -20
           } > /tmp/probe.txt 2>&1 || true
           cat /tmp/probe.txt
-          # Temporary: stop here so the diagnosis cycle does not pay for a
-          # full kernel build.
-          exit 1
 
       # ------------------------------------------------------------------
       - name: Build kernel

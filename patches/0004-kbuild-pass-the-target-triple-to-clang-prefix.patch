@@ -1,0 +1,35 @@
+From 521f7ce953bb022c4e55e93830bd92192859dfc8 Mon Sep 17 00:00:00 2001
+From: egor <egor@localhost>
+Date: Wed, 2 Sep 2026 02:32:55 +0000
+Subject: [PATCH] kbuild: pass the target triple to clang --prefix
+
+With a bare directory prefix, clang -no-integrated-as looks for <dir>as and
+finds the toolchain's *host* x86-64 assembler instead of the aarch64 one:
+
+  /home/runner/proton-clang/bin/as: unrecognized option '-EL'
+  clang-13: error: assembler command failed with exit code 1
+
+Every cc-option probe then fails, so the build dies early and misleadingly
+in prepare-compiler-check with '-fstack-protector-strong not supported by
+compiler'. Appending $(notdir $(CROSS_COMPILE)) makes clang resolve
+<dir>aarch64-linux-gnu-as, matching the upstream fix.
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 3eeb9820e..3aff28880 100644
+--- a/Makefile
++++ b/Makefile
+@@ -499,7 +499,7 @@ ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_FLAGS)), y)
+ $(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
+ endif
+ GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
+-CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)
++CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
+ GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
+ endif
+ ifneq ($(GCC_TOOLCHAIN),)
+-- 
+2.53.0
+
