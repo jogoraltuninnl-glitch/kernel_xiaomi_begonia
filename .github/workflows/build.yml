@@ -240,6 +240,41 @@ jobs:
             >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------
+      - name: Toolchain probe
+        working-directory: kernel
+        run: |
+          set -uxo pipefail
+          export PATH="$PATH:$CLANG_DIR/bin"
+          CLANG="$CLANG_DIR/bin/clang"
+          {
+            echo "== versions =="
+            "$CLANG" --version
+            ccache --version | head -1
+            echo "== which =="
+            command -v as ld aarch64-linux-gnu-as aarch64-linux-gnu-ld || true
+            echo "== probe 1: bare =="
+            "$CLANG" -c -x c /dev/null -o /tmp/p1.o 2>&1; echo "rc=$?"
+            echo "== probe 2: target =="
+            "$CLANG" --target=aarch64-linux-gnu -c -x c /dev/null -o /tmp/p2.o 2>&1; echo "rc=$?"
+            echo "== probe 3: target + ssp =="
+            "$CLANG" --target=aarch64-linux-gnu -fstack-protector-strong \
+              -c -x c /dev/null -o /tmp/p3.o 2>&1; echo "rc=$?"
+            echo "== probe 4: ccache + target + ssp =="
+            ccache "$CLANG" --target=aarch64-linux-gnu -fstack-protector-strong \
+              -c -x c /dev/null -o /tmp/p4.o 2>&1; echo "rc=$?"
+            echo "== probe 5: -target (old spelling) + ssp =="
+            "$CLANG" -target aarch64-linux-gnu -fstack-protector-strong \
+              -c -x c /dev/null -o /tmp/p5.o 2>&1; echo "rc=$?"
+            echo "== kbuild view =="
+            make O=out ARCH=arm64 CC="ccache $CLANG" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              -s -p prepare 2>&1 | grep -E "^(KBUILD_CFLAGS|CC|cc-name|stackp-flag|CLANG_FLAGS|CROSS_COMPILE) " | head -20
+          } > /tmp/probe.txt 2>&1 || true
+          cat /tmp/probe.txt
+
+      # ------------------------------------------------------------------
       - name: Build kernel
         working-directory: kernel
         run: |
@@ -338,7 +373,7 @@ jobs:
       # nothing but the plain API.
       # ------------------------------------------------------------------
       - name: Publish failure log to ci-logs branch
-        if: failure()
+        if: always()
         run: |
           set -uxo pipefail
           mkdir -p /tmp/logs
@@ -346,6 +381,7 @@ jobs:
             || echo "build.log missing" > /tmp/logs/build-tail.txt
           cp kernel/out/.config /tmp/logs/config.txt 2>/dev/null || true
           { df -h /; echo; free -m; } > /tmp/logs/env.txt 2>&1
+          cp /tmp/probe.txt /tmp/logs/probe.txt 2>/dev/null || true
 
           git config --global user.name  "begonia CI"
           git config --global user.email "ci@localhost"
