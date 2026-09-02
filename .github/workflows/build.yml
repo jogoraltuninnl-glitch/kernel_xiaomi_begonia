@@ -1,0 +1,323 @@
+name: Build begonia kernel (KernelSU-Next)
+
+# This repository deliberately does NOT vendor a copy of the Xiaomi kernel
+# dump. MiCode/Xiaomi_Kernel_OpenSource @ begonia-r-oss is a single-commit
+# source drop (~200 MiB of pack), so forking it would only make this repo
+# huge without giving us any history to work with. Instead the workflow
+# fetches the pristine upstream tree and applies the patch series in
+# patches/, which keeps every local change reviewable as a real commit.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ksu_tag:
+        description: 'KernelSU-Next tag (must be a *-legacy or 1.x tag on 4.14)'
+        required: false
+        default: 'v3.2.0-legacy'
+      build_ksu:
+        description: 'Include KernelSU-Next'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  DEFCONFIG: begonia_user_defconfig
+  KERNEL_IMAGE: Image.gz-dtb
+  DEVICE: begonia
+  KBUILD_BUILD_USER: egor
+  KBUILD_BUILD_HOST: github-actions
+  # Upstream Xiaomi source drop for Redmi Note 8 Pro / Android R.
+  KERNEL_REPO: https://github.com/MiCode/Xiaomi_Kernel_OpenSource
+  KERNEL_BRANCH: begonia-r-oss
+  # begonia-r-oss ships no Wi-Fi driver at all; it lives in a separate repo.
+  MTK_MODULES_REPO: https://github.com/MiCode/MTK_kernel_modules
+  MTK_MODULES_BRANCH: begonia-r-oss
+  # Proton-Clang is archived but is still the reference toolchain for 4.14 MTK.
+  CLANG_REPO: https://github.com/kdrag0n/proton-clang
+  CLANG_BRANCH: master
+  KSU_TAG: ${{ github.event.inputs.ksu_tag || 'v3.2.0-legacy' }}
+
+jobs:
+  build:
+    name: Build Image.gz-dtb + AnyKernel3 ZIP
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # ------------------------------------------------------------------
+      - name: Checkout this repository (patches + AnyKernel3)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ------------------------------------------------------------------
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl device-tree-compiler \
+            flex git kmod libelf-dev libssl-dev lz4 python3 rsync zip zstd
+          # 4.14 host tooling expects `python`
+          sudo ln -sf "$(command -v python3)" /usr/local/bin/python
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      # ------------------------------------------------------------------
+      # Layout produced below, and why it matters:
+      #
+      #   $GITHUB_WORKSPACE/
+      #   ├── kernel/                       <- srctree
+      #   ├── vendor/mediatek/kernel_modules/
+      #   ├── AnyKernel3/
+      #   └── patches/
+      #
+      # drivers/misc/mediatek/connectivity/Makefile resolves the Wi-Fi driver
+      # as $(srctree)/../vendor/mediatek/kernel_modules/..., so the vendor tree
+      # must sit *next to* the kernel checkout - never inside it.
+      # ------------------------------------------------------------------
+      - name: Fetch upstream kernel source
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          cd kernel
+          git log --oneline -1
+          # Give `git am` an identity and a real repo to commit into.
+          git config user.name  "begonia CI"
+          git config user.email "ci@localhost"
+
+      - name: Apply begonia patch series
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          git am --empty=drop --3way "$GITHUB_WORKSPACE"/patches/*.patch
+          git log --oneline | head -10
+          echo "PATCHES_APPLIED=$(ls "$GITHUB_WORKSPACE"/patches/*.patch | wc -l)" \
+            >> "$GITHUB_ENV"
+
+      - name: Fetch MediaTek vendor Wi-Fi modules
+        run: |
+          set -euxo pipefail
+          VENDOR="$GITHUB_WORKSPACE/vendor/mediatek/kernel_modules"
+          mkdir -p "$(dirname "$VENDOR")"
+          git clone --depth=1 -b "$MTK_MODULES_BRANCH" "$MTK_MODULES_REPO" "$VENDOR"
+          # MTK's own -Werror turns dozens of legacy-C warnings into hard
+          # errors on any toolchain newer than the clang r383902 these sources
+          # were written against. Keep the warnings, drop the fatality.
+          grep -rl -- '-Werror' "$VENDOR/connectivity" \
+            | xargs -r sed -i 's/ -Werror\b//g; s/-Werror //g; s/-Werror$//g'
+          for m in common wlan/adaptor wlan/core/gen4m; do
+            printf '\nsubdir-ccflags-y += -Wno-error\nccflags-y += -Wno-error\n' \
+              >> "$VENDOR/connectivity/$m/Makefile"
+          done
+          test -d "$VENDOR/connectivity/wlan/core/gen4m"
+          du -sh "$VENDOR"
+
+      # ------------------------------------------------------------------
+      - name: Fetch Proton-Clang
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 -b "$CLANG_BRANCH" "$CLANG_REPO" "$HOME/proton-clang"
+          echo "$HOME/proton-clang/bin" >> "$GITHUB_PATH"
+          "$HOME/proton-clang/bin/clang" --version | head -1
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-begonia-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-begonia-${{ github.ref_name }}-
+            ccache-begonia-
+
+      - name: Configure ccache
+        run: |
+          ccache -M 5G
+          ccache -o compression=true
+          ccache -z
+
+      # ------------------------------------------------------------------
+      # KernelSU-Next.
+      #
+      # IMPORTANT: the mainline `next` line (>= v3.3.0) does NOT compile on
+      # 4.14 - kernel/hook/syscall_hook.h relies on `syscall_fn_t`, which was
+      # only introduced on arm64 in 4.19. Non-GKI kernels must use a *-legacy
+      # (or 1.x) tag. Pin it, never track HEAD.
+      #
+      # The patch series already wires drivers/Makefile, drivers/Kconfig and
+      # the drivers/kernelsu symlink; setup.sh strips and re-adds those lines,
+      # so running it afterwards is idempotent rather than conflicting.
+      # ------------------------------------------------------------------
+      - name: Set up KernelSU-Next (${{ env.KSU_TAG }})
+        if: ${{ github.event.inputs.build_ksu != 'false' }}
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          curl -LSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            -o /tmp/ksun-setup.sh
+          bash /tmp/ksun-setup.sh "$KSU_TAG"
+          test -L drivers/kernelsu
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          echo "KSU_VERSION=$(git -C KernelSU-Next describe --tags)" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
+      - name: Generate .config
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          make -j"$(nproc --all)" O=out ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "$DEFCONFIG"
+          # Fail loudly if any of the features we care about silently dropped
+          # out (a missing dependency turns CONFIG_KSU into "not set").
+          for opt in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KPROBES \
+                     CONFIG_OVERLAY_FS CONFIG_TMPFS_XATTR \
+                     CONFIG_WLAN_DRV_BUILD_IN \
+                     CONFIG_MTK_COMBO_CHIP_CONSYS_6785 \
+                     CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL CONFIG_DEFAULT_BBR; do
+            if ! grep -q "^${opt}=y" out/.config; then
+              echo "::error::${opt} is not enabled in the generated .config"
+              exit 1
+            fi
+          done
+          grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr"' out/.config \
+            || { echo "::error::default TCP congestion control is not bbr"; exit 1; }
+          grep -q '^CONFIG_MTK_COMBO_CHIP="CONSYS_6785"' out/.config \
+            || { echo "::error::MTK combo chip is not CONSYS_6785"; exit 1; }
+          # KernelSU-Next must use the in-tree manual hooks, never kprobes.
+          # (With KSU_MANUAL_HOOK=y the kprobes symbol loses its dependency and
+          # disappears from .config entirely, so assert on its absence.)
+          if grep -q '^CONFIG_KSU_KPROBES_HOOK=y' out/.config; then
+            echo "::error::KSU kprobes hook is enabled; expected manual hooks"
+            exit 1
+          fi
+          for f in fs/exec.c fs/open.c fs/stat.c fs/read_write.c \
+                   kernel/reboot.c drivers/input/input.c; do
+            grep -q 'ksu_handle_' "$f" \
+              || { echo "::error::manual KSU hook missing in $f"; exit 1; }
+          done
+          echo "KERNEL_RELEASE=$(make -s O=out ARCH=arm64 kernelrelease 2>/dev/null | tail -1)" \
+            >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          make -j"$(nproc --all)" O=out ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            "$KERNEL_IMAGE" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Verify build artifacts
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          IMG="out/arch/arm64/boot/${KERNEL_IMAGE}"
+          test -s "$IMG" || { echo "::error::${IMG} was not produced"; exit 1; }
+          ls -lh "$IMG"
+          echo "Image size: $(stat -c %s "$IMG") bytes"
+          ccache -s | head -8
+
+      # ------------------------------------------------------------------
+      - name: Package AnyKernel3 ZIP
+        id: pack
+        run: |
+          set -euxo pipefail
+          test -f AnyKernel3/anykernel.sh \
+            || { echo "::error::AnyKernel3/ is missing from the tree"; exit 1; }
+
+          PKG="$RUNNER_TEMP/pkg"
+          rm -rf "$PKG"
+          cp -a AnyKernel3 "$PKG"
+          rm -rf "$PKG/.git" "$PKG/.github" "$PKG/README.md"
+
+          cp "kernel/out/arch/arm64/boot/${KERNEL_IMAGE}" "$PKG/${KERNEL_IMAGE}"
+
+          # Any out-of-tree .ko we happened to build travels with the ZIP.
+          if find kernel/out -name '*.ko' -print -quit | grep -q .; then
+            mkdir -p "$PKG/modules/system/lib/modules"
+            find kernel/out -name '*.ko' -exec cp -t "$PKG/modules/system/lib/modules" {} +
+            sed -i 's/^do.modules=0/do.modules=1/' "$PKG/anykernel.sh"
+          fi
+
+          # Sanity-check the flashing script with the same shell recovery uses.
+          sh -n "$PKG/anykernel.sh"
+          test -f "$PKG/ramdisk/init.begonia_tweaks.rc"
+
+          NAME="begonia-ksun-${KSU_VERSION:-noksu}-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+          ( cd "$PKG" && zip -r9 "$GITHUB_WORKSPACE/${NAME}.zip" . -x '.*' )
+          unzip -l "${NAME}.zip"
+          echo "zip_name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.zip_name }}
+          path: ${{ steps.pack.outputs.zip_name }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload raw kernel image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image.gz-dtb-${{ github.sha }}
+          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload .config and build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-and-log-${{ github.sha }}
+          path: |
+            kernel/out/.config
+            build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # ------------------------------------------------------------------
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## begonia kernel build"
+            echo
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| device | Redmi Note 8 Pro (begonia, MT6785) |"
+            echo "| kernel release | \`${KERNEL_RELEASE:-n/a}\` |"
+            echo "| defconfig | \`${DEFCONFIG}\` |"
+            echo "| patches applied | \`${PATCHES_APPLIED:-0}\` |"
+            echo "| KernelSU-Next | \`${KSU_VERSION:-not included}\` |"
+            echo "| hook mode | \`manual\` |"
+            echo "| Wi-Fi | \`gen4m built-in (CONNAC, 6785)\` |"
+            echo "| image | \`${KERNEL_IMAGE}\` |"
+            echo "| ZIP | \`${{ steps.pack.outputs.zip_name }}.zip\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

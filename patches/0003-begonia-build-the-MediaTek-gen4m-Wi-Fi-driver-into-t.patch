@@ -1,0 +1,106 @@
+From 76a95c5556dc0e25a2c0f2dcddf097c8d04c3102 Mon Sep 17 00:00:00 2001
+From: "Egor (begonia build)" <egor@localhost>
+Date: Wed, 2 Sep 2026 01:10:20 +0000
+Subject: [PATCH 3/3] begonia: build the MediaTek gen4m Wi-Fi driver into the
+ kernel
+
+begonia-r-oss ships no Wi-Fi driver: drivers/misc/mediatek/connectivity
+symlinks wmt_drv / wmt_chrdev_wifi / wlan_drv_gen4m out of
+$(srctree)/../vendor/mediatek/kernel_modules, which lives in the separate
+MiCode/MTK_kernel_modules repo (branch begonia-r-oss). The prebuilt vendor
+.ko files cannot be reused because their vermagic will not match a
+self-built kernel, so link the driver in statically instead.
+
+  * connectivity/Makefile: resolve ABS_PATH_TO_* with $(abspath ...).
+    Upstream used a bare $(srctree)/../..., but with an O= build srctree is
+    the relative string '..', so every symlink pointed at a nonexistent
+    drivers/misc/vendor/... and the build died with 'No rule to make target
+    wlan_drv_gen4m/Makefile'.
+  * connectivity/Kconfig: add WLAN_DRV_BUILD_IN. Upstream only ever read it
+    from the environment, so it could not be expressed in a defconfig.
+  * connectivity/Makefile: subdir-ccflags-y += -Wno-error.
+  * defconfig: CONFIG_MTK_COMBO_CHIP_CONSYS_6785=y (-> MTK_COMBO_CHIP
+    "CONSYS_6785", MTK_PLATFORM_ID 6785, WIFI_IP_SET 2, CONNAC),
+    CONFIG_WLAN_DRV_BUILD_IN=y.
+  * CI: clone the vendor tree *next to* the kernel checkout and strip
+    -Werror from its 7 Makefiles, and assert the new options in .config.
+
+Verified with an aarch64 cross build of drivers/misc/mediatek/connectivity/:
+155 objects, 0 errors, built-in.o produced for all three vendor trees
+including wlan_6785_axi.o.
+---
+ arch/arm64/configs/begonia_user_defconfig   |  6 ++++++
+ drivers/misc/mediatek/connectivity/Kconfig  | 13 +++++++++++++
+ drivers/misc/mediatek/connectivity/Makefile | 11 ++++++++---
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/configs/begonia_user_defconfig b/arch/arm64/configs/begonia_user_defconfig
+index 3144335aa..b111ff56c 100644
+--- a/arch/arm64/configs/begonia_user_defconfig
++++ b/arch/arm64/configs/begonia_user_defconfig
+@@ -528,3 +528,9 @@ CONFIG_NET_SCH_FQ_CODEL=y
+ CONFIG_KSU_MANUAL_HOOK=y
+ # CONFIG_KSU_KPROBES_HOOK is not set
+ CONFIG_TMPFS_XATTR=y
++
++# --- MediaTek Wi-Fi (gen4m / CONNAC) built into the kernel image ---
++# Requires MiCode/MTK_kernel_modules (branch begonia-r-oss) checked out at
++# ../vendor/mediatek/kernel_modules relative to this source tree.
++CONFIG_MTK_COMBO_CHIP_CONSYS_6785=y
++CONFIG_WLAN_DRV_BUILD_IN=y
+diff --git a/drivers/misc/mediatek/connectivity/Kconfig b/drivers/misc/mediatek/connectivity/Kconfig
+index 4f1b307eb..53e0c7207 100644
+--- a/drivers/misc/mediatek/connectivity/Kconfig
++++ b/drivers/misc/mediatek/connectivity/Kconfig
+@@ -204,6 +204,19 @@ config MTK_COMBO_CHIP_CONSYS_6893
+ 	  MT6893(BT/WIFI/GPS/FM combo chip)
+ endchoice
+ 
++config WLAN_DRV_BUILD_IN
++	bool "Build the MediaTek Wi-Fi driver (gen4m) into the kernel image"
++	default n
++	help
++	  begonia-r-oss ships no Wi-Fi driver: the connectivity Makefile symlinks
++	  wmt_drv / wmt_chrdev_wifi / wlan_drv_gen4m out of
++	  $(srctree)/../vendor/mediatek/kernel_modules, which lives in the separate
++	  MiCode/MTK_kernel_modules repository (branch begonia-r-oss).
++	  Saying Y here links those drivers into the kernel image instead of
++	  relying on the prebuilt vendor .ko files, whose vermagic will not match
++	  a self-built kernel. The vendor tree MUST be checked out next to the
++	  kernel source or the build will fail with "is not existed".
++
+ config MTK_COMBO_CHIP
+ 	string
+ 	default "MT6620" if MTK_COMBO_CHIP_MT6620
+diff --git a/drivers/misc/mediatek/connectivity/Makefile b/drivers/misc/mediatek/connectivity/Makefile
+index 527e1aeea..7d1e67fa9 100644
+--- a/drivers/misc/mediatek/connectivity/Makefile
++++ b/drivers/misc/mediatek/connectivity/Makefile
+@@ -15,6 +15,11 @@
+ # If KERNELRELEASE is defined, we've been invoked from the
+ # kernel build system and can use its language.
+ ifneq ($(KERNELRELEASE),)
++    # begonia: the vendor connectivity/gen4m sources are full of warnings that
++    # MTK's own -Werror turns fatal on any toolchain newer than the clang
++    # r383902 / gcc 4.9 they were written against. Keep the warnings visible
++    # but non-fatal for this subtree only.
++    subdir-ccflags-y += -Wno-error
+     subdir-ccflags-y += -I$(srctree)/
+     subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include
+     subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/clkbuf_v1
+@@ -62,9 +67,9 @@ endif
+         PATH_TO_WLAN_CHR_DRV = vendor/mediatek/kernel_modules/connectivity/wlan/adaptor
+         PATH_TO_WLAN_DRV     = vendor/mediatek/kernel_modules/connectivity/wlan/core/gen4m
+ 
+-        ABS_PATH_TO_WMT_DRV      = $(srctree)/../$(PATH_TO_WMT_DRV)
+-        ABS_PATH_TO_WLAN_CHR_DRV = $(srctree)/../$(PATH_TO_WLAN_CHR_DRV)
+-        ABS_PATH_TO_WLAN_DRV     = $(srctree)/../$(PATH_TO_WLAN_DRV)
++        ABS_PATH_TO_WMT_DRV      = $(abspath $(srctree)/../$(PATH_TO_WMT_DRV))
++        ABS_PATH_TO_WLAN_CHR_DRV = $(abspath $(srctree)/../$(PATH_TO_WLAN_CHR_DRV))
++        ABS_PATH_TO_WLAN_DRV     = $(abspath $(srctree)/../$(PATH_TO_WLAN_DRV))
+ 
+         # check wlan driver folder
+         ifeq (,$(wildcard $(ABS_PATH_TO_WMT_DRV)))
+-- 
+2.53.0
+

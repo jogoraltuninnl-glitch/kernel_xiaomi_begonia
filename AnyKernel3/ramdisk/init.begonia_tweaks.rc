@@ -1,0 +1,93 @@
+# ===========================================================================
+# init.begonia_tweaks.rc
+# ---------------------------------------------------------------------------
+# sysfs / procfs tuning for Redmi Note 8 Pro (begonia, MT6785 Helio G90T)
+# Shipped inside the boot ramdisk by AnyKernel3, therefore it lives on the
+# boot partition and is NOT touched by a /data wipe (factory reset).
+#
+# Imported from the ramdisk init.rc (see anykernel.sh -> insert_line).
+#
+# Notes on syntax:
+#  * init "write" failures on a non-existing node are only logged, never fatal,
+#    so both the UFS (sda) and eMMC (mmcblk0) paths can be listed safely.
+#  * cluster layout: policy0 = cpu0-5 (A55), policy6 = cpu6-7 (A76).
+# ===========================================================================
+
+on property:sys.boot_completed=1
+    # ---------------------------------------------------------------------
+    # I/O scheduler + block queue
+    # Legacy (single-queue) elevator names: noop / deadline / cfq
+    # blk-mq names: none / mq-deadline / kyber
+    # Only one of these writes will succeed depending on the storage stack.
+    # ---------------------------------------------------------------------
+    write /sys/block/sda/queue/scheduler "mq-deadline"
+    write /sys/block/sda/queue/scheduler "deadline"
+    write /sys/block/mmcblk0/queue/scheduler "mq-deadline"
+    write /sys/block/mmcblk0/queue/scheduler "deadline"
+
+    # Deeper queue + bigger readahead: better sequential throughput on UFS.
+    write /sys/block/sda/queue/nr_requests "256"
+    write /sys/block/sda/queue/read_ahead_kb "256"
+    write /sys/block/mmcblk0/queue/nr_requests "256"
+    write /sys/block/mmcblk0/queue/read_ahead_kb "256"
+
+    # Entropy contribution and I/O stats are pure overhead for flash storage.
+    write /sys/block/sda/queue/add_random "0"
+    write /sys/block/sda/queue/iostats "0"
+    write /sys/block/sda/queue/rotational "0"
+    write /sys/block/sda/queue/nomerges "0"
+    write /sys/block/mmcblk0/queue/add_random "0"
+    write /sys/block/mmcblk0/queue/iostats "0"
+    write /sys/block/mmcblk0/queue/rotational "0"
+
+    # ---------------------------------------------------------------------
+    # schedutil aggressiveness
+    # These mirror the values hardcoded in kernel/sched/cpufreq_schedutil.c
+    # and re-apply them in case a vendor init script overrode them.
+    # ---------------------------------------------------------------------
+    write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor "schedutil"
+    write /sys/devices/system/cpu/cpufreq/policy6/scaling_governor "schedutil"
+    write /sys/devices/system/cpu/cpufreq/policy0/schedutil/up_rate_limit_us "500"
+    write /sys/devices/system/cpu/cpufreq/policy0/schedutil/down_rate_limit_us "2000"
+    write /sys/devices/system/cpu/cpufreq/policy6/schedutil/up_rate_limit_us "250"
+    write /sys/devices/system/cpu/cpufreq/policy6/schedutil/down_rate_limit_us "4000"
+
+    # Hysteresis / boost knobs exposed by the MTK EAS scheduler.
+    write /proc/sys/kernel/sched_boost "0"
+    write /dev/stune/top-app/schedtune.prefer_idle "1"
+    write /dev/stune/top-app/schedtune.boost "10"
+    write /dev/stune/foreground/schedtune.prefer_idle "0"
+
+    # ---------------------------------------------------------------------
+    # Networking: BBR is compiled in as the default, assert it anyway and
+    # pair it with the fq qdisc it was designed for.
+    # ---------------------------------------------------------------------
+    write /proc/sys/net/ipv4/tcp_congestion_control "bbr"
+    write /proc/sys/net/core/default_qdisc "fq"
+    write /proc/sys/net/ipv4/tcp_fastopen "3"
+    write /proc/sys/net/ipv4/tcp_low_latency "1"
+
+    # ---------------------------------------------------------------------
+    # Logging / tracing: cut kernel log spam and MTK debug facilities.
+    # printk levels: console / default / minimum / boot-time-default
+    # ---------------------------------------------------------------------
+    write /proc/sys/kernel/printk "0 0 0 0"
+    write /proc/sys/kernel/printk_devkmsg "off"
+    write /sys/kernel/debug/tracing/tracing_on "0"
+    write /sys/kernel/debug/tracing/events/enable "0"
+    write /sys/module/mmc_core/parameters/use_spi_crc "0"
+    write /sys/kernel/debug/mtk_sched/enable "0"
+
+    # ---------------------------------------------------------------------
+    # VM tuning: begonia ships 6/8 GB, so we can be less swap-happy and
+    # keep dirty pages in RAM a bit longer.
+    # ---------------------------------------------------------------------
+    write /proc/sys/vm/swappiness "60"
+    write /proc/sys/vm/vfs_cache_pressure "80"
+    write /proc/sys/vm/dirty_expire_centisecs "1000"
+    write /proc/sys/vm/dirty_writeback_centisecs "1500"
+    write /proc/sys/vm/stat_interval "10"
+
+    # Marker so the tweaks can be verified from adb:
+    #   getprop begonia.tweaks.applied
+    setprop begonia.tweaks.applied 1

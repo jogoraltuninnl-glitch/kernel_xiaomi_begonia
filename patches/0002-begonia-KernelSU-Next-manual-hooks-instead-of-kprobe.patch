@@ -1,0 +1,246 @@
+From 99383353a0d8fd49049f709f5805a32be6942067 Mon Sep 17 00:00:00 2001
+From: "Egor (begonia build)" <egor@localhost>
+Date: Wed, 2 Sep 2026 00:50:22 +0000
+Subject: [PATCH 2/3] begonia: KernelSU-Next manual hooks instead of kprobes
+
+Agent 5's research showed kprobes is disabled in every known working begonia
+config and is reported to bootloop on 4.14 MTK arm64, so switch the hook mode.
+
+In-tree hooks added (all behind #ifdef CONFIG_KSU):
+  fs/exec.c            do_execveat_common -> ksu_handle_execveat_ksud +
+                                             ksu_handle_execveat_sucompat
+  fs/open.c            sys_faccessat      -> ksu_handle_faccessat
+  fs/stat.c            vfs_statx          -> ksu_handle_stat
+  fs/read_write.c      vfs_read           -> ksu_handle_vfs_read
+  drivers/input/input.c input_handle_event -> ksu_handle_input_handle_event
+  kernel/reboot.c      sys_reboot         -> ksu_handle_sys_reboot
+                       (also the marker KernelSU-Next's Kbuild greps for)
+  fs/namespace.c       can_umount()/path_umount() backport, injected
+                       automatically by KernelSU-Next's Kbuild on 4.14
+
+defconfig: CONFIG_KSU_MANUAL_HOOK=y, CONFIG_KSU_KPROBES_HOOK off,
+CONFIG_TMPFS_XATTR=y. KPROBES stays enabled as a fallback/tracing facility.
+
+Verified with an aarch64 cross build: 'Hook mode: Manual', all seven touched
+translation units plus the 28 KernelSU objects compile with zero errors.
+---
+ arch/arm64/configs/begonia_user_defconfig |  9 +++++++++
+ drivers/input/input.c                     | 17 ++++++++++++++++-
+ fs/exec.c                                 | 20 ++++++++++++++++++++
+ fs/open.c                                 | 10 ++++++++++
+ fs/read_write.c                           | 14 ++++++++++++++
+ fs/stat.c                                 | 10 ++++++++++
+ kernel/reboot.c                           | 19 +++++++++++++++++++
+ 7 files changed, 98 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/configs/begonia_user_defconfig b/arch/arm64/configs/begonia_user_defconfig
+index d43ea4a48..3144335aa 100644
+--- a/arch/arm64/configs/begonia_user_defconfig
++++ b/arch/arm64/configs/begonia_user_defconfig
+@@ -519,3 +519,12 @@ CONFIG_DEFAULT_BBR=y
+ CONFIG_DEFAULT_TCP_CONG="bbr"
+ CONFIG_NET_SCH_FQ=y
+ CONFIG_NET_SCH_FQ_CODEL=y
++
++# --- KernelSU-Next hook mode ---
++# Manual (in-tree) hooks instead of kprobes: kprobes on 4.14 MTK arm64 is
++# unreliable (reported bootloops on begonia) and is disabled in every known
++# working begonia config. See fs/exec.c, fs/open.c, fs/stat.c,
++# fs/read_write.c, drivers/input/input.c, kernel/reboot.c.
++CONFIG_KSU_MANUAL_HOOK=y
++# CONFIG_KSU_KPROBES_HOOK is not set
++CONFIG_TMPFS_XATTR=y
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index 6f8217ec7..705f45361 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -456,10 +456,25 @@ static int input_get_disposition(struct input_dev *dev,
+ 	return disposition;
+ }
+ 
++#ifdef CONFIG_KSU
++/*
++ * KernelSU-Next manual hook: used to detect the vol-up/vol-down safe-mode
++ * key combination during boot.
++ */
++extern int ksu_handle_input_handle_event(unsigned int *type,
++					 unsigned int *code, int *value);
++#endif
++
+ static void input_handle_event(struct input_dev *dev,
+ 			       unsigned int type, unsigned int code, int value)
+ {
+-	int disposition = input_get_disposition(dev, type, code, &value);
++	int disposition;
++
++#ifdef CONFIG_KSU
++	ksu_handle_input_handle_event(&type, &code, &value);
++#endif
++
++	disposition = input_get_disposition(dev, type, code, &value);
+ 
+ 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+ 		add_input_randomness(type, code, value);
+diff --git a/fs/exec.c b/fs/exec.c
+index 836ee524a..cd654c088 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1696,6 +1696,21 @@ static int exec_binprm(struct linux_binprm *bprm)
+ /*
+  * sys_execve() executes a new program.
+  */
++#ifdef CONFIG_KSU
++/*
++ * KernelSU-Next manual hooks.
++ *  - ksud:     hijacks the very first /system/bin/init exec to start ksud
++ *  - sucompat: rewrites exec of /system/bin/su into KSU's own su
++ * struct user_arg_ptr is local to this file, hence the declaration here
++ * rather than in a header.
++ */
++extern int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
++				    struct user_arg_ptr *argv,
++				    struct user_arg_ptr *envp, int *flags);
++extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
++					void *argv, void *envp, int *flags);
++#endif
++
+ static int do_execveat_common(int fd, struct filename *filename,
+ 			      struct user_arg_ptr argv,
+ 			      struct user_arg_ptr envp,
+@@ -1707,6 +1722,11 @@ static int do_execveat_common(int fd, struct filename *filename,
+ 	struct files_struct *displaced;
+ 	int retval;
+ 
++#ifdef CONFIG_KSU
++	ksu_handle_execveat_ksud(&fd, &filename, &argv, &envp, &flags);
++	ksu_handle_execveat_sucompat(&fd, &filename, NULL, NULL, NULL);
++#endif
++
+ 	if (IS_ERR(filename))
+ 		return PTR_ERR(filename);
+ 
+diff --git a/fs/open.c b/fs/open.c
+index 3b62683fe..8893112c7 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -359,6 +359,12 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+  * We do this by temporarily clearing all FS-related capabilities and
+  * switching the fsuid/fsgid around to the real ones.
+  */
++#ifdef CONFIG_KSU
++/* KernelSU-Next manual hook (su-compat: makes access("/system/bin/su") work). */
++extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
++				int *mode, int *flags);
++#endif
++
+ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ {
+ 	const struct cred *old_cred;
+@@ -369,6 +375,10 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ 	int res;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW;
+ 
++#ifdef CONFIG_KSU
++	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
++#endif
++
+ 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
+ 		return -EINVAL;
+ 
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 0da6e4f19..6594cc56a 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -429,10 +429,24 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
+ }
+ EXPORT_SYMBOL(kernel_read);
+ 
++#ifdef CONFIG_KSU
++/*
++ * KernelSU-Next manual hook: lets ksud replace the content of
++ * /system/etc/init/atrace.rc during early boot so that the userspace daemon
++ * gets started.
++ */
++extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
++			       size_t *count_ptr, loff_t **pos);
++#endif
++
+ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+ {
+ 	ssize_t ret;
+ 
++#ifdef CONFIG_KSU
++	ksu_handle_vfs_read(&file, &buf, &count, &pos);
++#endif
++
+ 	if (!(file->f_mode & FMODE_READ))
+ 		return -EBADF;
+ 	if (!(file->f_mode & FMODE_CAN_READ))
+diff --git a/fs/stat.c b/fs/stat.c
+index 873785dae..337ad09bc 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -163,6 +163,12 @@ EXPORT_SYMBOL(vfs_statx_fd);
+  *
+  * 0 will be returned on success, and a -ve error code if unsuccessful.
+  */
++#ifdef CONFIG_KSU
++/* KernelSU-Next manual hook (su-compat: makes stat("/system/bin/su") work). */
++extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
++			   int *flags);
++#endif
++
+ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	      struct kstat *stat, u32 request_mask)
+ {
+@@ -170,6 +176,10 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	int error = -EINVAL;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+ 
++#ifdef CONFIG_KSU
++	ksu_handle_stat(&dfd, &filename, &flags);
++#endif
++
+ 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+ 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+ 		return -EINVAL;
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index 2cc8d156f..dbb66ac27 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -284,6 +284,16 @@ static DEFINE_MUTEX(reboot_mutex);
+  *
+  * reboot doesn't sync: do that yourself before calling this.
+  */
++#ifdef CONFIG_KSU
++/*
++ * KernelSU-Next manual hook.
++ * Also acts as the marker KernelSU-Next's Kbuild greps for to confirm that
++ * manual hooks are present (see KernelSU-Next/kernel/Kbuild, HAVE_KSU_HOOK).
++ */
++extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
++				 void __user **arg);
++#endif
++
+ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		void __user *, arg)
+ {
+@@ -291,6 +301,15 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 	char buffer[256];
+ 	int ret = 0;
+ 
++#ifdef CONFIG_KSU
++	/*
++	 * Must run before the CAP_SYS_BOOT check: this is the supercall the
++	 * KernelSU manager uses, and it is a no-op unless the KSU magic is
++	 * passed in magic1.
++	 */
++	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
++#endif
++
+ 	/* We only trust the superuser with rebooting the system. */
+ 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
+ 		return -EPERM;
+-- 
+2.53.0
+
