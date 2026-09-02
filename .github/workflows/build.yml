@@ -54,6 +54,8 @@ jobs:
     name: Build Image.gz-dtb + AnyKernel3 ZIP
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: write
 
     steps:
       # ------------------------------------------------------------------
@@ -328,6 +330,38 @@ jobs:
           path: kernel/out/arch/arm64/boot/Image.gz-dtb
           if-no-files-found: error
           retention-days: 30
+
+      # ------------------------------------------------------------------
+      # Artifacts and raw job logs are served from a separate blob host that
+      # is not reachable from every network. Publishing the log tail back into
+      # the repository on a side branch makes post-mortems possible with
+      # nothing but the plain API.
+      # ------------------------------------------------------------------
+      - name: Publish failure log to ci-logs branch
+        if: failure()
+        run: |
+          set -uxo pipefail
+          mkdir -p /tmp/logs
+          tail -400 build.log > /tmp/logs/build-tail.txt 2>/dev/null \
+            || echo "build.log missing" > /tmp/logs/build-tail.txt
+          cp kernel/out/.config /tmp/logs/config.txt 2>/dev/null || true
+          { df -h /; echo; free -m; } > /tmp/logs/env.txt 2>&1
+
+          git config --global user.name  "begonia CI"
+          git config --global user.email "ci@localhost"
+          rm -rf /tmp/logrepo
+          git clone --depth=1 \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            /tmp/logrepo
+          cd /tmp/logrepo
+          git checkout -B ci-logs
+          rm -rf logs && mkdir -p logs
+          cp /tmp/logs/* logs/
+          echo "run ${{ github.run_number }} / ${{ github.sha }} / $(date -u)" \
+            > logs/README.txt
+          git add -A
+          git commit -qm "ci: log tail for run ${{ github.run_number }}" || exit 0
+          git push -f origin ci-logs
 
       - name: Upload .config and build log
         if: always()
