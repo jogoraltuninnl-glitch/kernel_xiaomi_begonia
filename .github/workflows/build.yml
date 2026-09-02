@@ -181,13 +181,21 @@ jobs:
       - name: Generate .config
         working-directory: kernel
         run: |
-          set -euxo pipefail
-          make -j"$(nproc --all)" O=out ARCH=arm64 \
-            CC="ccache clang" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            "$DEFCONFIG"
+          set -uxo pipefail
+          # Surface the failure through ::error:: annotations: the raw job log
+          # lives on a blob host that is not always reachable.
+          if ! make -j"$(nproc --all)" O=out ARCH=arm64 \
+                 CC="ccache clang" \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                 "$DEFCONFIG" > /tmp/kconf.log 2>&1; then
+            tail -30 /tmp/kconf.log | while IFS= read -r line; do
+              echo "::error::defconfig: ${line}"
+            done
+            exit 2
+          fi
+          set -e
           # Fail loudly if any of the features we care about silently dropped
           # out (a missing dependency turns CONFIG_KSU into "not set").
           for opt in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KPROBES \
