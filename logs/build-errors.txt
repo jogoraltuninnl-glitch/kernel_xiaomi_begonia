@@ -1,0 +1,14 @@
+4822:ld.lld: error: duplicate symbol: fw_entry
+4828:ld.lld: error: duplicate symbol: mtk_vcu_mem_init
+4834:ld.lld: error: duplicate symbol: mtk_vcu_mem_release
+4840:ld.lld: error: duplicate symbol: mtk_vcu_set_buffer
+4846:ld.lld: error: duplicate symbol: mtk_vcu_get_buffer
+4852:ld.lld: error: duplicate symbol: mtk_vcu_get_page
+4858:ld.lld: error: duplicate symbol: mtk_vcu_free_buffer
+4864:ld.lld: error: duplicate symbol: mtk_vcu_free_page
+4870:ld.lld: error: duplicate symbol: mtk_vcu_buffer_ref_dec
+4876:ld.lld: error: duplicate symbol: vcu_io_buffer_cache_sync
+4882:ld.lld: error: duplicate symbol: vcu_buffer_flush_all
+4888:ld.lld: error: duplicate symbol: vcu_buffer_cache_sync
+4893:make[1]: *** [/home/runner/work/kernel_xiaomi_begonia/kernel_xiaomi_begonia/kernel/Makefile:1155: vmlinux] Error 1
+4895:make: *** [Makefile:146: sub-make] Error 2

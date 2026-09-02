@@ -1,0 +1,116 @@
++ echo '== versions =='
+== versions ==
++ /home/runner/proton-clang/bin/clang --version
+Proton clang version 13.0.0 (https://github.com/llvm/llvm-project b4fd512c36ca344a3ff69350219e8b0a67e9472a)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /home/runner/proton-clang/bin
++ ccache --version
++ head -1
+ccache version 4.9.1
++ echo '== which =='
+== which ==
++ command -v as ld aarch64-linux-gnu-as aarch64-linux-gnu-ld
+/usr/bin/as
+/usr/bin/ld
+/home/runner/proton-clang/bin/aarch64-linux-gnu-as
+/home/runner/proton-clang/bin/aarch64-linux-gnu-ld
++ echo '== probe 1: bare =='
+== probe 1: bare ==
++ /home/runner/proton-clang/bin/clang -c -x c /dev/null -o /tmp/p1.o
++ echo rc=0
+rc=0
++ echo '== probe 2: target =='
+== probe 2: target ==
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -c -x c /dev/null -o /tmp/p2.o
++ echo rc=0
+rc=0
++ echo '== probe 3: target + ssp =='
+== probe 3: target + ssp ==
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/p3.o
++ echo rc=0
+rc=0
++ echo '== probe 4: ccache + target + ssp =='
+== probe 4: ccache + target + ssp ==
++ ccache /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/p4.o
++ echo rc=0
+rc=0
++ echo '== probe 5: -target (old spelling) + ssp =='
+== probe 5: -target (old spelling) + ssp ==
++ /home/runner/proton-clang/bin/clang -target aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/p5.o
++ echo rc=0
+rc=0
++ echo '== probe 6: external assembler runs at all? =='
+== probe 6: external assembler runs at all? ==
++ aarch64-linux-gnu-as --version
++ head -3
+GNU assembler (GNU Binutils) 2.36.1
+Copyright (C) 2021 Free Software Foundation, Inc.
+This program is free software; you may redistribute it under the terms of
++ echo rc=0
+rc=0
++ echo '== probe 7: full kbuild flags =='
+== probe 7: full kbuild flags ==
++ FLAGS='--target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/ --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option'
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/ --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option -fstack-protector-strong -c -x c /dev/null -o /tmp/p7.o
+/home/runner/proton-clang/bin/as: unrecognized option '-EL'
+clang-13: error: assembler command failed with exit code 1 (use -v to see invocation)
++ echo rc=1
+rc=1
++ echo '== probe 8: same, integrated as =='
+== probe 8: same, integrated as ==
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/p8.o
++ echo rc=0
+rc=0
++ echo '== probe 9: which pieces break =='
+== probe 9: which pieces break ==
++ for f in "--prefix=$CLANG_DIR/bin/" "--gcc-toolchain=$CLANG_DIR" "-no-integrated-as" "-Werror=unknown-warning-option"
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/ -fstack-protector-strong -c -x c /dev/null -o /tmp/pf.o
+++ head -2 /tmp/pf.err
+++ tr '\n' ' '
++ echo 'flag[--prefix=/home/runner/proton-clang/bin/] rc=0 :: '
+flag[--prefix=/home/runner/proton-clang/bin/] rc=0 :: 
++ for f in "--prefix=$CLANG_DIR/bin/" "--gcc-toolchain=$CLANG_DIR" "-no-integrated-as" "-Werror=unknown-warning-option"
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu --gcc-toolchain=/home/runner/proton-clang -fstack-protector-strong -c -x c /dev/null -o /tmp/pf.o
+++ head -2 /tmp/pf.err
+++ tr '\n' ' '
++ echo 'flag[--gcc-toolchain=/home/runner/proton-clang] rc=0 :: '
+flag[--gcc-toolchain=/home/runner/proton-clang] rc=0 :: 
++ for f in "--prefix=$CLANG_DIR/bin/" "--gcc-toolchain=$CLANG_DIR" "-no-integrated-as" "-Werror=unknown-warning-option"
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -no-integrated-as -fstack-protector-strong -c -x c /dev/null -o /tmp/pf.o
+++ head -2 /tmp/pf.err
+++ tr '\n' ' '
++ echo 'flag[-no-integrated-as] rc=0 :: '
+flag[-no-integrated-as] rc=0 :: 
++ for f in "--prefix=$CLANG_DIR/bin/" "--gcc-toolchain=$CLANG_DIR" "-no-integrated-as" "-Werror=unknown-warning-option"
++ /home/runner/proton-clang/bin/clang --target=aarch64-linux-gnu -Werror=unknown-warning-option -fstack-protector-strong -c -x c /dev/null -o /tmp/pf.o
+++ head -2 /tmp/pf.err
+++ tr '\n' ' '
++ echo 'flag[-Werror=unknown-warning-option] rc=0 :: '
+flag[-Werror=unknown-warning-option] rc=0 :: 
++ echo '== kbuild view =='
+== kbuild view ==
++ make O=out ARCH=arm64 'CC=ccache /home/runner/proton-clang/bin/clang' CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- -s -p prepare
++ grep -E '^(KBUILD_CFLAGS|CC|cc-name|stackp-flag|CLANG_FLAGS|CROSS_COMPILE) '
++ head -20
+KBUILD_CFLAGS = -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -fshort-wchar -Werror-implicit-function-declaration -Wno-format-security -std=gnu89 --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option -fno-PIE -mno-implicit-float -DCONFIG_AS_LSE=1  -fno-asynchronous-unwind-tables -fno-pic -Wno-asm-operand-widths -DKASAN_SHADOW_SCALE_SHIFT=3 -fno-delete-null-pointer-checks -Wno-frame-address -Wno-int-in-bool-context -Wno-address-of-packed-member -O2 --param=allow-store-data-races=0 -DCC_HAVE_ASM_GOTO -Wframe-larger-than=2800 -fstack-protector-strong -Wno-format-invalid-specifier -Wno-gnu -Wno-duplicate-decl-specifier -Wno-tautological-compare  -mno-global-merge -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -g -Wdeclaration-after-statement -Wno-pointer-sign -Wno-array-bounds -fno-strict-overflow -fno-merge-all-constants -fno-stack-check -Werror=implicit-int -Werror=strict-prototypes -Werror=date-time -Werror=incompatible-pointer-types -fmacro-prefix-map=../= -Wno-initializer-overrides -Wno-unused-value -Wno-format -Wno-sign-compare -Wno-format-zero-length -Wno-uninitialized -Wno-pointer-to-enum-cast    
+CLANG_FLAGS = --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option
+cc-name = $(shell $(CC) -v 2>&1 | grep -q "clang version" && echo clang || echo gcc)
+CROSS_COMPILE = aarch64-linux-gnu-
+CC = ccache /home/runner/proton-clang/bin/clang
+KBUILD_CFLAGS = -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -fshort-wchar -Werror-implicit-function-declaration -Wno-format-security -std=gnu89 --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option -fno-PIE -mno-implicit-float -DCONFIG_AS_LSE=1  -fno-asynchronous-unwind-tables -fno-pic -Wno-asm-operand-widths -DKASAN_SHADOW_SCALE_SHIFT=3 -fno-delete-null-pointer-checks -Wno-frame-address -Wno-int-in-bool-context -Wno-address-of-packed-member -O2 --param=allow-store-data-races=0 -DCC_HAVE_ASM_GOTO -Wframe-larger-than=2800 -fstack-protector-strong -Wno-format-invalid-specifier -Wno-gnu -Wno-duplicate-decl-specifier -Wno-tautological-compare  -mno-global-merge -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -g -Wdeclaration-after-statement -Wno-pointer-sign -Wno-array-bounds -fno-strict-overflow -fno-merge-all-constants -fno-stack-check -Werror=implicit-int -Werror=strict-prototypes -Werror=date-time -Werror=incompatible-pointer-types -fmacro-prefix-map=../= -Wno-initializer-overrides -Wno-unused-value -Wno-format -Wno-sign-compare -Wno-format-zero-length -Wno-uninitialized -Wno-pointer-to-enum-cast    
+CLANG_FLAGS = --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option
+cc-name = $(shell $(CC) -v 2>&1 | grep -q "clang version" && echo clang || echo gcc)
+CROSS_COMPILE = aarch64-linux-gnu-
+CC = ccache /home/runner/proton-clang/bin/clang
+cc-name = $(shell $(CC) -v 2>&1 | grep -q "clang version" && echo clang || echo gcc)
+CC = ccache /home/runner/proton-clang/bin/clang
+CLANG_FLAGS = --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option
+CROSS_COMPILE = aarch64-linux-gnu-
+KBUILD_CFLAGS = -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -fshort-wchar -Werror-implicit-function-declaration -Wno-format-security -std=gnu89 --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option -fno-PIE -mno-implicit-float -DCONFIG_AS_LSE=1  -fno-asynchronous-unwind-tables -fno-pic -Wno-asm-operand-widths -DKASAN_SHADOW_SCALE_SHIFT=3 -fno-delete-null-pointer-checks -Wno-frame-address -Wno-int-in-bool-context -Wno-address-of-packed-member -O2 --param=allow-store-data-races=0 -DCC_HAVE_ASM_GOTO -Wframe-larger-than=2800 -fstack-protector-strong -Wno-format-invalid-specifier -Wno-gnu -Wno-duplicate-decl-specifier -Wno-tautological-compare  -mno-global-merge -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -g -Wdeclaration-after-statement -Wno-pointer-sign -Wno-array-bounds -fno-strict-overflow -fno-merge-all-constants -fno-stack-check -Werror=implicit-int -Werror=strict-prototypes -Werror=date-time -Werror=incompatible-pointer-types -fmacro-prefix-map=../= -Wno-initializer-overrides -Wno-unused-value -Wno-format -Wno-sign-compare -Wno-format-zero-length -Wno-uninitialized -Wno-pointer-to-enum-cast    
+cc-name = $(shell $(CC) -v 2>&1 | grep -q "clang version" && echo clang || echo gcc)
+CC = ccache /home/runner/proton-clang/bin/clang
+CLANG_FLAGS = --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option
+CROSS_COMPILE = aarch64-linux-gnu-
+KBUILD_CFLAGS = -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -fshort-wchar -Werror-implicit-function-declaration -Wno-format-security -std=gnu89 --target=aarch64-linux-gnu --prefix=/home/runner/proton-clang/bin/aarch64-linux-gnu- --gcc-toolchain=/home/runner/proton-clang -no-integrated-as -Werror=unknown-warning-option -fno-PIE -mno-implicit-float -DCONFIG_AS_LSE=1  -fno-asynchronous-unwind-tables -fno-pic -Wno-asm-operand-widths -DKASAN_SHADOW_SCALE_SHIFT=3 -fno-delete-null-pointer-checks -Wno-frame-address -Wno-int-in-bool-context -Wno-address-of-packed-member -O2 --param=allow-store-data-races=0 -DCC_HAVE_ASM_GOTO -Wframe-larger-than=2800 -fstack-protector-strong -Wno-format-invalid-specifier -Wno-gnu -Wno-duplicate-decl-specifier -Wno-tautological-compare  -mno-global-merge -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -g -Wdeclaration-after-statement -Wno-pointer-sign -Wno-array-bounds -fno-strict-overflow -fno-merge-all-constants -fno-stack-check -Werror=implicit-int -Werror=strict-prototypes -Werror=date-time -Werror=incompatible-pointer-types -fmacro-prefix-map=../= -Wno-initializer-overrides -Wno-unused-value -Wno-format -Wno-sign-compare -Wno-format-zero-length -Wno-uninitialized -Wno-pointer-to-enum-cast    
+grep: write error: Broken pipe
